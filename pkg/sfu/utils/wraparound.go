@@ -43,6 +43,15 @@ func NewWrapAround[T number, ET extendedNumber]() *WrapAround[T, ET] {
 	}
 }
 
+func (w *WrapAround[T, ET]) Init(ev ET) {
+	w.start = T(ev)
+	w.highest = T(ev)
+	w.cycles = ev & ^(w.fullRange - 1)
+	w.updateExtendedHighest()
+
+	w.initialized = true
+}
+
 func (w *WrapAround[T, ET]) Seed(from *WrapAround[T, ET]) {
 	w.initialized = from.initialized
 	w.start = from.start

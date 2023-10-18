@@ -69,6 +69,14 @@ func (r *RTPStatsReceiver) NewSnapshotId() uint32 {
 	return r.newSnapshotID(r.sequenceNumber.GetExtendedHighest())
 }
 
+func (r *RTPStatsReceiver) Init(startSN uint16, extHighestSN uint64, startTS uint32, extHighestTS uint64) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	r.sequenceNumber.Init(startSN, extHighestSN)
+	r.timestamp.Init(startTS, extHighestTS)
+}
+
 func (r *RTPStatsReceiver) Update(
 	packetTime time.Time,
 	sequenceNumber uint16,
@@ -255,7 +263,37 @@ func (r *RTPStatsReceiver) SetRtcpSenderReportData(srData *RTCPSenderReportData)
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if srData == nil || !r.initialized {
+	if srData == nil {
+		return
+	}
+
+	tsCycles := uint64(0)
+	if r.srNewest != nil {
+		tsCycles = r.srNewest.RTPTimestampExt & 0xFFFF_FFFF_0000_0000
+		if (srData.RTPTimestamp-r.srNewest.RTPTimestamp) < (1<<31) && srData.RTPTimestamp < r.srNewest.RTPTimestamp {
+			tsCycles += (1 << 32)
+		}
+	}
+
+	srDataCopy := *srData
+	srDataCopy.RTPTimestampExt = uint64(srDataCopy.RTPTimestamp) + tsCycles
+	r.setRtcpSenderReportDataLocked(&srDataCopy)
+}
+
+func (r *RTPStatsReceiver) SetRtcpSenderReportDataExt(srData *RTCPSenderReportData) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	if srData == nil {
+		return
+	}
+
+	srDataCopy := *srData
+	r.setRtcpSenderReportDataLocked(&srDataCopy)
+}
+
+func (r *RTPStatsReceiver) setRtcpSenderReportDataLocked(srData *RTCPSenderReportData) {
+	if !r.initialized {
 		return
 	}
 
@@ -273,20 +311,9 @@ func (r *RTPStatsReceiver) SetRtcpSenderReportData(srData *RTCPSenderReportData)
 		return
 	}
 
-	tsCycles := uint64(0)
-	if r.srNewest != nil {
-		tsCycles = r.srNewest.RTPTimestampExt & 0xFFFF_FFFF_0000_0000
-		if (srData.RTPTimestamp-r.srNewest.RTPTimestamp) < (1<<31) && srData.RTPTimestamp < r.srNewest.RTPTimestamp {
-			tsCycles += (1 << 32)
-		}
-	}
+	r.maybeAdjustFirstPacketTime(srData.RTPTimestampExt, r.timestamp.GetExtendedStart())
 
-	srDataCopy := *srData
-	srDataCopy.RTPTimestampExt = uint64(srDataCopy.RTPTimestamp) + tsCycles
-
-	r.maybeAdjustFirstPacketTime(srDataCopy.RTPTimestampExt, r.timestamp.GetExtendedStart())
-
-	if r.srNewest != nil && srDataCopy.RTPTimestampExt < r.srNewest.RTPTimestampExt {
+	if r.srNewest != nil && srData.RTPTimestampExt < r.srNewest.RTPTimestampExt {
 		// This can happen when a track is replaced with a null and then restored -
 		// i. e. muting replacing with null and unmute restoring the original track.
 		// Under such a condition reset the sender reports to start from this point.
@@ -297,17 +324,17 @@ func (r *RTPStatsReceiver) SetRtcpSenderReportData(srData *RTCPSenderReportData)
 			"prevRTP", r.srNewest.RTPTimestamp,
 			"prevNTP", r.srNewest.NTPTimestamp.Time().String(),
 			"prevAt", r.srNewest.At.String(),
-			"currTSExt", srDataCopy.RTPTimestampExt,
-			"currRTP", srDataCopy.RTPTimestamp,
-			"currNTP", srDataCopy.NTPTimestamp.Time().String(),
-			"currentAt", srDataCopy.At.String(),
+			"currTSExt", srData.RTPTimestampExt,
+			"currRTP", srData.RTPTimestamp,
+			"currNTP", srData.NTPTimestamp.Time().String(),
+			"currentAt", srData.At.String(),
 		)
 		r.srFirst = nil
 	}
 
-	r.srNewest = &srDataCopy
+	r.srNewest = srData
 	if r.srFirst == nil {
-		r.srFirst = &srDataCopy
+		r.srFirst = srData
 	}
 }
 
